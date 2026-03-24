@@ -1,31 +1,39 @@
-import math
+import os
+import json
+from web3 import Web3
 
-class GovernanceEngine:
-    def __init__(self, token_supply, minimum_quorum):
-        self.token_supply = token_supply
-        self.minimum_quorum = minimum_quorum
-        self.proposals = []
-        self.voters = {}
+# Connect to Ethereum node
+w3 = Web3(Web3.HTTPProvider('https://mainnet.infura.io/v3/YOUR_PROJECT_ID'))
 
-    def register_voter(self, address, token_balance):
-        self.voters[address] = token_balance
+# Contract ABI and address
+abi = json.load(open('abi.json'))
+contract_address = '0x123456789abcdef0123456789abcdef01234567'
+contract = w3.eth.contract(address=contract_address, abi=abi)
 
-    def create_proposal(self, proposal_details):
-        self.proposals.append(proposal_details)
+# Proposal struct
+class Proposal:
+    def __init__(self, id, title, description, author, start_block, end_block, vote_weight):
+        self.id = id
+        self.title = title
+        self.description = description
+        self.author = author
+        self.start_block = start_block
+        self.end_block = end_block
+        self.vote_weight = vote_weight
 
-    def vote(self, voter_address, proposal_index, vote_weight):
-        if voter_address not in self.voters:
-            raise ValueError("Voter not registered")
-        if vote_weight > self.voters[voter_address]:
-            raise ValueError("Insufficient voting power")
-        self.proposals[proposal_index]['votes'] += vote_weight
-        self.voters[voter_address] -= vote_weight
+# Create a new proposal
+def create_proposal(title, description, author, start_block, end_block, vote_weight):
+    tx = contract.functions.createProposal(
+        title, description, author, start_block, end_block, vote_weight
+    ).transact({'from': w3.eth.accounts[0]})
+    return tx.wait(1)
 
-    def finalize_proposal(self, proposal_index):
-        proposal = self.proposals[proposal_index]
-        total_votes = sum(p['votes'] for p in self.proposals)
-        if total_votes >= self.minimum_quorum and proposal['votes'] > total_votes / 2:
-            proposal['status'] = 'passed'
-        else:
-            proposal['status'] = 'failed'
-        return proposal['status']
+# Vote on a proposal
+def vote_on_proposal(proposal_id, vote_weight):
+    tx = contract.functions.voteOnProposal(proposal_id, vote_weight).transact({'from': w3.eth.accounts[0]})
+    return tx.wait(1)
+
+# Finalize a proposal
+def finalize_proposal(proposal_id):
+    tx = contract.functions.finalizeProposal(proposal_id).transact({'from': w3.eth.accounts[0]})
+    return tx.wait(1)
