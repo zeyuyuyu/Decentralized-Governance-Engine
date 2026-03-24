@@ -1,129 +1,56 @@
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
-from typing import Dict, List, Optional
+import os
+import json
+from web3 import Web3
 
-class ProposalStatus(Enum):
-    DRAFT = 'draft'
-    ACTIVE = 'active' 
-    PASSED = 'passed'
-    REJECTED = 'rejected'
-    EXECUTED = 'executed'
+# Connect to Ethereum node
+w3 = Web3(Web3.HTTPProvider('https://mainnet.infura.io/v3/YOUR-PROJECT-ID'))
 
-@dataclass
-class Vote:
-    voter: str
-    weight: float
-    timestamp: datetime
-    support: bool
+# Set up contract ABI and address
+with open('./abi/governance.json') as f:
+    abi = json.load(f)
+contract_address = '0x1234567890123456789012345678901234567890'
+contract = w3.eth.contract(address=contract_address, abi=abi)
 
-@dataclass 
+# Define proposal struct
 class Proposal:
-    id: str
-    title: str
-    description: str
-    proposer: str
-    status: ProposalStatus
-    created_at: datetime
-    start_time: datetime
-    end_time: datetime
-    votes: List[Vote]
-    min_quorum: float
-    execution_threshold: float
+    def __init__(self, id, title, description, creator, start_block, end_block, votes_for, votes_against):
+        self.id = id
+        self.title = title
+        self.description = description
+        self.creator = creator
+        self.start_block = start_block
+        self.end_block = end_block
+        self.votes_for = votes_for
+        self.votes_against = votes_against
 
-class GovernanceEngine:
-    def __init__(self):
-        self._proposals: Dict[str, Proposal] = {}
-        self._voting_weights: Dict[str, float] = {}
-    
-    def create_proposal(self, id: str, title: str, description: str, 
-                       proposer: str, start_time: datetime, end_time: datetime,
-                       min_quorum: float = 0.4, execution_threshold: float = 0.6) -> Proposal:
-        if id in self._proposals:
-            raise ValueError(f'Proposal with ID {id} already exists')
-            
-        proposal = Proposal(
-            id=id,
-            title=title,
-            description=description,
-            proposer=proposer,
-            status=ProposalStatus.DRAFT,
-            created_at=datetime.now(),
-            start_time=start_time,
-            end_time=end_time,
-            votes=[],
-            min_quorum=min_quorum,
-            execution_threshold=execution_threshold
-        )
-        self._proposals[id] = proposal
-        return proposal
+# Create new proposal
+def create_proposal(title, description, creator):
+    current_block = w3.eth.get_block_number()
+    proposal_id = contract.functions.createProposal(title, description, creator, current_block, current_block + 10000).call()
+    return Proposal(proposal_id, title, description, creator, current_block, current_block + 10000, 0, 0)
 
-    def activate_proposal(self, proposal_id: str) -> None:
-        proposal = self._get_proposal(proposal_id)
-        if proposal.status != ProposalStatus.DRAFT:
-            raise ValueError('Can only activate proposals in DRAFT status')
-        proposal.status = ProposalStatus.ACTIVE
+# Vote on proposal
+def vote_on_proposal(proposal_id, voter, vote):
+    tx = contract.functions.voteOnProposal(proposal_id, vote).transact({'from': voter})
+    w3.eth.wait_for_transaction_receipt(tx)
+    proposal = get_proposal(proposal_id)
+    if vote:
+        proposal.votes_for += 1
+    else:
+        proposal.votes_against += 1
+    return proposal
 
-    def cast_vote(self, proposal_id: str, voter: str, support: bool) -> None:
-        proposal = self._get_proposal(proposal_id)
-        
-        if proposal.status != ProposalStatus.ACTIVE:
-            raise ValueError('Can only vote on ACTIVE proposals')
-            
-        if datetime.now() < proposal.start_time:
-            raise ValueError('Voting period has not started')
-            
-        if datetime.now() > proposal.end_time:
-            raise ValueError('Voting period has ended')
+# Get proposal details
+def get_proposal(proposal_id):
+    proposal_data = contract.functions.getProposal(proposal_id).call()
+    return Proposal(proposal_id, *proposal_data)
 
-        # Remove any existing vote from this voter
-        proposal.votes = [v for v in proposal.votes if v.voter != voter]
-        
-        weight = self._voting_weights.get(voter, 1.0)
-        vote = Vote(voter=voter, weight=weight, timestamp=datetime.now(), support=support)
-        proposal.votes.append(vote)
-        
-        self._check_proposal_state(proposal)
+# Example usage
+proposal = create_proposal('Increase token supply', 'Increase the total token supply by 10%', '0x0123456789012345678901234567890123456789')
+print(f'Proposal created: {proposal.title}')
 
-    def set_voting_weight(self, voter: str, weight: float) -> None:
-        if weight < 0:
-            raise ValueError('Voting weight cannot be negative')
-        self._voting_weights[voter] = weight
+vote_on_proposal(proposal.id, '0x9876543210987654321098765432109876543210', True)
+vote_on_proposal(proposal.id, '0x0123456789012345678901234567890123456789', False)
 
-    def get_proposal_result(self, proposal_id: str) -> dict:
-        proposal = self._get_proposal(proposal_id)
-        
-        total_weight = sum(self._voting_weights.get(v.voter, 1.0) for v in proposal.votes)
-        support_weight = sum(v.weight for v in proposal.votes if v.support)
-        
-        quorum_reached = total_weight >= proposal.min_quorum
-        execution_threshold_met = (support_weight / total_weight) >= proposal.execution_threshold if total_weight > 0 else False
-        
-        return {
-            'total_votes': len(proposal.votes),
-            'total_weight': total_weight,
-            'support_weight': support_weight,
-            'quorum_reached': quorum_reached,
-            'execution_threshold_met': execution_threshold_met
-        }
-
-    def _get_proposal(self, proposal_id: str) -> Proposal:
-        if proposal_id not in self._proposals:
-            raise ValueError(f'Proposal {proposal_id} not found')
-        return self._proposals[proposal_id]
-
-    def _check_proposal_state(self, proposal: Proposal) -> None:
-        if proposal.status != ProposalStatus.ACTIVE:
-            return
-            
-        if datetime.now() <= proposal.end_time:
-            return
-            
-        result = self.get_proposal_result(proposal.id)
-        
-        if not result['quorum_reached']:
-            proposal.status = ProposalStatus.REJECTED
-        elif result['execution_threshold_met']:
-            proposal.status = ProposalStatus.PASSED
-        else:
-            proposal.status = ProposalStatus.REJECTED
+updated_proposal = get_proposal(proposal.id)
+print(f'Proposal details: {updated_proposal.votes_for} votes for, {updated_proposal.votes_against} votes against')
